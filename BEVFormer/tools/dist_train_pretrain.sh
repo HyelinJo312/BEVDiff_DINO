@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+export CUDA_VISIBLE_DEVICES=4,5,6,7
+GPUS=$1
+PORT=${PORT:-28508}
+
+CONFIG="./projects/configs/bevdiffuser/layout_tiny_pretrain.py"
+# LOAD_FROM="./ckpts/bevformer_tiny_epoch_24.pth"
+RESUME_FROM=None
+RUN_NAME="BEVDiffuser_tiny_pretrain_1denoise"
+WORK_DIR="../results_pretrain/${RUN_NAME}"
+
+DENOISE_WEIGHT=1.0
+
+export PYTHONWARNINGS="ignore"
+
+PYTHONPATH="$(dirname $0)/..":$PYTHONPATH \
+# python -m torch.distributed.launch --nproc_per_node=$GPUS --master_port=$PORT \
+torchrun --nproc_per_node=4 --master_port=29505 \
+    $(dirname "$0")/train_pretrain.py $CONFIG \
+    --launcher pytorch ${@:3} \
+    --deterministic \
+    --work_dir $WORK_DIR \
+    --denoise_loss_weight $DENOISE_WEIGHT \
+    --report_to 'tensorboard' \
+    # --load_from=$LOAD_FROM \
+    # --resume_from=$RESUME_FROM \

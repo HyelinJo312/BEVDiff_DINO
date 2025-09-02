@@ -1,0 +1,58 @@
+2025-08-26 00:18:53,209 - mmdet - INFO - Start running, host: user@user-ESC8000A-E11, work_dir: /home/user/data/Hyelin/BEV/mmdetection3d/BEVDiffuser/results_pretrain_debug_v2
+2025-08-26 00:18:53,210 - mmdet - INFO - Hooks will be executed in the following order:
+before_run:
+(VERY_HIGH   ) CosineAnnealingLrUpdaterHook       
+(NORMAL      ) CheckpointHook                     
+(NORMAL      ) EvalHook                           
+(VERY_LOW    ) TextLoggerHook                     
+(VERY_LOW    ) TensorboardLoggerHook              
+ -------------------- 
+before_train_epoch:
+(VERY_HIGH   ) CosineAnnealingLrUpdaterHook       
+(NORMAL      ) EvalHook                           
+(LOW         ) IterTimerHook                      
+(VERY_LOW    ) TextLoggerHook                     
+(VERY_LOW    ) TensorboardLoggerHook              
+ -------------------- 
+before_train_iter:
+(VERY_HIGH   ) CosineAnnealingLrUpdaterHook       
+(NORMAL      ) EvalHook                           
+(LOW         ) IterTimerHook                      
+ -------------------- 
+after_train_iter:
+(ABOVE_NORMAL) OptimizerHook                      
+(NORMAL      ) CheckpointHook                     
+(NORMAL      ) EvalHook                           
+(LOW         ) IterTimerHook                      
+(VERY_LOW    ) TextLoggerHook                     
+(VERY_LOW    ) TensorboardLoggerHook              
+ -------------------- 
+after_train_epoch:
+(NORMAL      ) CheckpointHook                     
+(NORMAL      ) EvalHook                           
+(VERY_LOW    ) TextLoggerHook                     
+(VERY_LOW    ) TensorboardLoggerHook              
+ -------------------- 
+before_val_epoch:
+(LOW         ) IterTimerHook                      
+(VERY_LOW    ) TextLoggerHook                     
+(VERY_LOW    ) TensorboardLoggerHook              
+ -------------------- 
+before_val_iter:
+(LOW         ) IterTimerHook                      
+ -------------------- 
+after_val_iter:
+(LOW         ) IterTimerHook                      
+ -------------------- 
+after_val_epoch:
+(VERY_LOW    ) TextLoggerHook                     
+(VERY_LOW    ) TensorboardLoggerHook              
+ -------------------- 
+after_run:
+(VERY_LOW    ) TextLoggerHook                     
+(VERY_LOW    ) TensorboardLoggerHook              
+ -------------------- 
+2025-08-26 00:18:53,210 - mmdet - INFO - workflow: [('train', 1)], max: 50000 iters
+2025-08-26 00:18:53,211 - mmdet - INFO - Checkpoints will be saved to /home/user/data/Hyelin/BEV/mmdetection3d/BEVDiffuser/results_pretrain_debug_v2 by HardDiskBackend.
+2025-08-26 00:19:36,160 - mmdet - INFO - Iter [50/50000]	lr: 7.102e-05, eta: 11:47:57, time: 0.850, data_time: 0.062, memory: 11465, loss_cls: 1.6429, loss_bbox: 1.8705, d0.loss_cls: 1.7334, d0.loss_bbox: 1.8000, d1.loss_cls: 1.6656, d1.loss_bbox: 1.8078, d2.loss_cls: 1.6534, d2.loss_bbox: 1.8156, d3.loss_cls: 1.6610, d3.loss_bbox: 1.8195, d4.loss_cls: 1.6598, d4.loss_bbox: 1.8407, loss_diff: 0.6567, loss: 21.6268, grad_norm: 55.0148
+2025-08-26 00:20:08,747 - mmdet - INFO - Iter [100/50000]	lr: 7.547e-05, eta: 10:24:37, time: 0.652, data_time: 0.031, memory: 11465, loss_cls: 1.4079, loss_bbox: 1.7924, d0.loss_cls: 1.4255, d0.loss_bbox: 1.7206, d1.loss_cls: 1.4106, d1.loss_bbox: 1.7513, d2.loss_cls: 1.4117, d2.loss_bbox: 1.7330, d3.loss_cls: 1.4114, d3.loss_bbox: 1.7679, d4.loss_cls: 1.4111, d4.loss_bbox: 1.7589, loss_diff: 0.3164, loss: 19.3187, grad_norm: 50.9375
