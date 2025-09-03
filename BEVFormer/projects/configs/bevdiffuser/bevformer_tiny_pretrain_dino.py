@@ -109,17 +109,6 @@ model = dict(
             from_pretrained='stabilityai/stable-diffusion-2-1',
             subfolder='scheduler',              
             prediction_type='sample'),
-        # noise_scheduler=dict(
-        #     type='DDPMScheduler',
-        #     from_pretrained='stabilityai/stable-diffusion-2-1',
-        #     subfolder='scheduler',              
-        #     prediction_type='sample'),
-        # infer_scheduler=dict(
-        #     type='DDIMGuidedScheduler',        
-        #     from_pretrained='stabilityai/stable-diffusion-2-1',
-        #     subfolder='scheduler',
-        #     prediction_type='sample'),
-            # eta=0.0),  
         unet = dict(
             type='projects.bevdiffuser.ldm.modules.diffusionmodules.openaimodel.UNetModel',
             parameters=dict(
@@ -244,8 +233,8 @@ model = dict(
         pts=dict(diffusion=dict(
             noise_timesteps=5,          
             denoise_timesteps=5,      
-            num_inference_steps=5,     
-            use_cfg=True,               
+            num_inference_steps=5,
+            ddim_sampling_eta=0.0,                   
             guidance_scale=2.0,
             use_task_guidance=False))))    
     
@@ -334,9 +323,11 @@ optimizer_config = dict(grad_clip=dict(max_norm=35, norm_type=2))
 # learning policy
 lr_config = dict(
     policy='CosineAnnealing',
+    by_epoch=False,          # iter 단위 LR 갱신
     warmup='linear',
-    warmup_iters=1500,    # 500 for epoch-based
-    warmup_ratio=1.0 / 3,
+    warmup_by_epoch=False,   # iter 단위 warmup
+    warmup_iters=500,        # 500 / 98462 비율과 동일
+    warmup_ratio=1.0/3,
     min_lr_ratio=1e-3)
 
 # total_epochs = 1

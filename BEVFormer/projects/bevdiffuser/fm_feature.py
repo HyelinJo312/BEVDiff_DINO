@@ -116,9 +116,8 @@ class GetDINOv2Cond(nn.Module):
         encoder: str = 'vitb',     # ['vits', 'vitb', 'vitl'] → small/base/large
         features: int = 256,       # output dim for BEVDiffuser conditioning
         device: str = 'cuda',
-        freeze: bool = True,
         patch: int = 14,
-        input_size: int = 518,     # ViT/14 권장 정사각 입력
+        input_size: int = 518,     
         pretrained: bool = True,
         symmetric_pad: bool = True,
     ):
@@ -139,18 +138,11 @@ class GetDINOv2Cond(nn.Module):
 
         self.hidden_dim = self.model.config.hidden_size  # 384/768/1024
 
-        # projection to BEVDiffuser conditioning dim
-        self.proj = nn.Sequential(
-            nn.Linear(self.hidden_dim, features),
-            nn.GELU(),
-            nn.Linear(features, features),
-        ).to(device)
-
         # ImageNet mean/std buffers (for in-graph normalization)
-        mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
-        std  = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
-        self.register_buffer('imgnet_mean', mean, persistent=False)
-        self.register_buffer('imgnet_std', std, persistent=False)
+        # mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
+        # std  = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
+        # self.register_buffer('imgnet_mean', mean, persistent=False)
+        # self.register_buffer('imgnet_std', std, persistent=False)
 
 
     def image_preprocess(self, x):
@@ -187,11 +179,16 @@ class GetDINOv2Cond(nn.Module):
 
         x = F.pad(x, (left, right, top, bottom), mode='replicate')
 
-        x = (x - self.imgnet_mean) / self.imgnet_std
+        # x = (x - self.imgnet_mean) / self.imgnet_std
         x = x.to(self.device, non_blocking=True)
 
+        extra_geom = {}
+        extra_geom['scale'] = scale
+        extra_geom['H2W2'] = (H2, W2)
+        extra_geom['padding'] = (top, left)
+
         Hp, Wp = H2 // self.patch, W2 // self.patch
-        return x, Hp, Wp
+        return x, Hp, Wp, extra_geom
     
 
     # def _preprocess(self, x: torch.Tensor) -> torch.Tensor: 
@@ -226,10 +223,10 @@ class GetDINOv2Cond(nn.Module):
             B  = 1
             x = images.reshape(B * V, C, H, W).contiguous()
         else:
-            raise ValueError(f"Uneimgspected tensor shape: {images.shape}")
+            raise ValueError(f"Unexpected tensor shape: {images.shape}")
         
         # x = self._preprocess(x)
-        x, Hp, Wp = self.image_preprocess(x)
+        x, Hp, Wp, extra_geom = self.image_preprocess(x)
 
         # Dinov2 forward: pass as pixel_values
         outputs = self.model(pixel_values=x, output_hidden_states=True)
@@ -242,7 +239,6 @@ class GetDINOv2Cond(nn.Module):
             tok    = h[:, 1:]          # (B*V, Hp*Wp, C_dino)
             # tok = h[:, 1:, :] 
             cls_tok = cls_tok.view(B, V, self.hidden_dim)                  # (B,V,C)
-            # cond = self.proj(cls_tok)   # 예: 글로벌 conditioning이 필요할 때
             tok_seq = tok.view(B, V, Hp * Wp, self.hidden_dim)             # (B,V,N,C)
             feats_out.append((tok_seq, cls_tok))
 
@@ -253,7 +249,8 @@ class GetDINOv2Cond(nn.Module):
             'patch_hw': (Hp, Wp),
             'last_cls': last_cls,           # (B, V, C)
             'last_tokens': last_tok,        # (B, V, N, C)
-            'img_metas': img_metas
+            'img_metas': img_metas,
+            'dino_geom': extra_geom
         }
 
 

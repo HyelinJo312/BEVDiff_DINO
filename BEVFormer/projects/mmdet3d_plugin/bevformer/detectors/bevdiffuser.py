@@ -41,9 +41,9 @@ class BEVDiffuser(BEVFormer):
         augmentations.
         """
         if return_loss:
-            return self.forward_train(return_loss=True, **kwargs)
+            return self.forward_train(**kwargs)
         else:
-            return self.forward_test(return_loss=False, **kwargs)
+            return self.forward_test(**kwargs)
         
         
     @auto_fp16(apply_to=('img', 'points'))
@@ -59,7 +59,6 @@ class BEVDiffuser(BEVFormer):
                       gt_bboxes_ignore=None,
                       img_depth=None,
                       img_mask=None,
-                      return_loss=True,
                     #   given_bev=None,
                       **kwargs,
                       ):
@@ -105,7 +104,7 @@ class BEVDiffuser(BEVFormer):
         
         losses_pts = self.forward_pts_train(img_feats, gt_bboxes_3d,
                                             gt_labels_3d, img_metas,
-                                            gt_bboxes_ignore, prev_bev, dino_outputs, return_loss=True, **kwargs)
+                                            gt_bboxes_ignore, prev_bev, dino_outputs, **kwargs)
 
         losses.update(losses_pts)
         return losses
@@ -119,7 +118,6 @@ class BEVDiffuser(BEVFormer):
                           prev_bev=None,
                         #   given_bev=None,
                           dino_feats=None,
-                          return_loss=True, 
                           **kwargs):
         """Forward function'
         Args:
@@ -137,7 +135,7 @@ class BEVDiffuser(BEVFormer):
         """
 
         outs = self.pts_bbox_head(
-            pts_feats, img_metas, prev_bev, dino_feats=dino_feats, return_loss=True, **kwargs)
+            pts_feats, img_metas, prev_bev, dino_feats=dino_feats, **kwargs)
         
         loss_inputs = [gt_bboxes_3d, gt_labels_3d, outs]
         losses = self.pts_bbox_head.loss(*loss_inputs, img_metas=img_metas)
@@ -187,7 +185,7 @@ class BEVDiffuser(BEVFormer):
         return loss, log_vars
     
 
-    def forward_test(self, img_metas, img=None, only_bev=False, return_loss=False, **kwargs):            
+    def forward_test(self, img_metas, img=None, only_bev=False, **kwargs):            
         for var, name in [(img_metas, 'img_metas')]:
             if not isinstance(var, list):
                 raise TypeError('{} must be a list, but got {}'.format(
@@ -217,7 +215,7 @@ class BEVDiffuser(BEVFormer):
         dino_outputs = self.cond_module(img[0], img_metas[0], 4)
         
         new_prev_bev, bbox_results = self.simple_test(
-            img_metas[0], img[0], prev_bev=self.prev_frame_info['prev_bev'], cond=dino_outputs, return_loss=False, **kwargs)
+            img_metas[0], img[0], prev_bev=self.prev_frame_info['prev_bev'], cond=dino_outputs, **kwargs)
             
         # During inference, we save the BEV features and ego motion of each timestamp.
         self.prev_frame_info['prev_pos'] = tmp_pos
@@ -226,9 +224,9 @@ class BEVDiffuser(BEVFormer):
         return bbox_results
     
 
-    def simple_test_pts(self, x, img_metas, prev_bev=None, rescale=False, cond=None, return_loss=False, **kwargs):
+    def simple_test_pts(self, x, img_metas, prev_bev=None, rescale=False, cond=None, **kwargs):
         """Test function"""
-        outs = self.pts_bbox_head(x, img_metas, prev_bev=prev_bev, dino_feats=cond, return_loss=False, **kwargs)
+        outs = self.pts_bbox_head(x, img_metas, prev_bev=prev_bev, dino_feats=cond, **kwargs)
         
         bbox_list = self.pts_bbox_head.get_bboxes(
             outs, img_metas, rescale=rescale)
@@ -239,13 +237,13 @@ class BEVDiffuser(BEVFormer):
         return outs['bev_embed'], bbox_results
     
     
-    def simple_test(self, img_metas, img=None, prev_bev=None, rescale=False, cond=None, return_loss=False, **kwargs):
+    def simple_test(self, img_metas, img=None, prev_bev=None, rescale=False, cond=None, **kwargs):
         """Test function without augmentaiton."""
         img_feats = self.extract_feat(img=img, img_metas=img_metas)
 
         bbox_list = [dict() for i in range(len(img_metas))]
         new_prev_bev, bbox_pts = self.simple_test_pts(
-            img_feats, img_metas, prev_bev, rescale=rescale, cond=cond, return_loss=False, **kwargs)
+            img_feats, img_metas, prev_bev, rescale=rescale, cond=cond, **kwargs)
         for result_dict, pts_bbox in zip(bbox_list, bbox_pts):
             result_dict['pts_bbox'] = pts_bbox
         return new_prev_bev, bbox_list

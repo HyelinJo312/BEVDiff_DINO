@@ -286,6 +286,18 @@ def main():
     model.init_weights()
     logger.info(f'Model:\n{model}')
 
+    # to use 'init_cfg' in config for loading weights
+    # ckpt_path = args.bev_checkpoint
+    # src = torch.load(ckpt_path, map_location='cpu')
+    # state = src.get('state_dict', src)
+
+    # prefix = 'pts_bbox_head.transformer.'
+    # sub = {k[len(prefix):]: v for k, v in state.items() if k.startswith(prefix)}
+
+    # torch.save({'state_dict': sub}, 'perception_transformer_only.pth')
+    # print(f'Saved {len(sub)} keys to perception_transformer_only.pth')
+
+    # Load pretrained BEVFormer weights
     if args.bev_checkpoint is not None:
         ckpt_path = args.bev_checkpoint
         raw = torch.load(ckpt_path, map_location='cpu')

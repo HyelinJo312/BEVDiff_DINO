@@ -159,7 +159,7 @@ class BEVDiffuserHead(BEVFormerHead):
 
 
     @auto_fp16(apply_to=('mlvl_feats'))
-    def forward(self, mlvl_feats, img_metas, prev_bev=None, only_bev=False, dino_feats=None, return_loss=True, **kwargs):
+    def forward(self, mlvl_feats, img_metas, prev_bev=None, only_bev=False, dino_feats=None, **kwargs):
         """Forward function.
         Args:
             mlvl_feats (tuple[Tensor]): Features from the upstream
@@ -211,7 +211,8 @@ class BEVDiffuserHead(BEVFormerHead):
         denoise_loss = None
 
         # Training: add noise -> UNet -> denoised
-        if return_loss:
+        # if return_loss:
+        if self.training:
             multi_feats, denoise_loss = self.compute_denoise(latents, **cond)
             denoised_bev = multi_feats    # B, C, H, W
         # Evaluation: DDIM sampling
@@ -305,6 +306,7 @@ class BEVDiffuserHead(BEVFormerHead):
         noise_timesteps     = int(diff_cfg.get('noise_timesteps', 0) or 0)
         denoise_timesteps   = int(diff_cfg.get('denoise_timesteps', 0) or 0)
         num_inference_steps = int(diff_cfg.get('num_inference_steps', 0) or 0)
+        ddim_sampling_eta = float(diff_cfg.get('ddim_sampling_eta', 1.0) or 0.0)
         guidance_scale      = float(diff_cfg.get('guidance_scale', 2.0))
         use_task_guidance   = bool(diff_cfg.get('use_task_guidance', False))
 
@@ -342,7 +344,7 @@ class BEVDiffuserHead(BEVFormerHead):
                 classifier_gradient = None
                 if use_task_guidance:
                     classifier_gradient = self._classifier_guidance_grad(latents, img_metas=img_metas, **kwargs)
-                latents = self.infer_scheduler.step(noise_pred, t, latents, return_dict=False, classifier_gradient=classifier_gradient)[0]
+                latents = self.infer_scheduler.step(noise_pred, t, latents, eta=ddim_sampling_eta, return_dict=False, classifier_gradient=classifier_gradient)[0]
 
         return latents
 
