@@ -19,16 +19,16 @@ class MultiScaleConcat(nn.Module):
         self.target_idx = target_idx
         c0, c1, c2 = in_chs
 
-        self.layer1 = nn.Sequential(
-            nn.Conv2d(c1, c1, kernel_size=3, padding=1, bias=False),
-            nn.GroupNorm(16, c1),
-            nn.ReLU(),   # nn.ReLU(inplace=True)
-        )
-        self.layer2 = nn.Sequential(
-            nn.Conv2d(c2, c2, kernel_size=3, padding=1, bias=False),
-            nn.GroupNorm(16, c2),
-            nn.ReLU(),   # nn.ReLU(inplace=True)
-        )
+        # self.layer1 = nn.Sequential(
+        #     nn.Conv2d(c1, c1, kernel_size=3, padding=1, bias=False),
+        #     nn.GroupNorm(16, c1),
+        #     nn.ReLU(),   # nn.ReLU(inplace=True)
+        # )
+        # self.layer2 = nn.Sequential(
+        #     nn.Conv2d(c2, c2, kernel_size=3, padding=1, bias=False),
+        #     nn.GroupNorm(16, c2),
+        #     nn.ReLU(),   # nn.ReLU(inplace=True)
+        # )
 
         self.out_layer = nn.Sequential(
             nn.Conv2d(c0 + c1 + c2, out_dim, kernel_size=1, bias=False),

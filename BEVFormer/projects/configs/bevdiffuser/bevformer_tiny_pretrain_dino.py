@@ -26,7 +26,12 @@ custom_imports = dict(
 
 custom_hooks = [
     dict(type='IterTimerHook', priority='VERY_HIGH'),
-    dict(type='FixUnetLrHook', unet_lr=1e-4),
+    dict(
+        type='FixUnetLrHook',
+        unet_lr=1e-4,
+        unet_attr_path='pts_bbox_head.unet',  
+        priority='VERY_LOW',
+    ),
 ]
 
 plugin = True
@@ -141,6 +146,11 @@ model = dict(
             hidden_dim=_dim_,
             out_channels=_dim_,
             norm='group'),
+        # fuser=dict(
+        #     type='CrossAttentionFusion',
+        #     d_model=_dim_,
+        #     d_k=_dim_ // 2,
+        #     d_v=_dim_ // 2),
         transformer=dict(
             type='PerceptionTransformer',
             rotate_prev_bev=True,
@@ -240,8 +250,8 @@ model = dict(
     
 
 dataset_type = 'CustomNuScenesDiffusionDataset_layout'
-# data_root = 'data/nuscenes/'
-data_root = 'BEVFormer/data/nuscenes/'
+data_root = 'data/nuscenes/'
+# data_root = 'BEVFormer/data/nuscenes/'
 file_client_args = dict(backend='disk')
 
 train_pipeline = [
@@ -310,7 +320,7 @@ data = dict(
 
 optimizer = dict(
     type='AdamW',
-    lr=2e-4, 
+    lr=2e-5, 
     paramwise_cfg=dict(
         custom_keys={
             'img_backbone': dict(lr_mult=0.1),
@@ -336,17 +346,17 @@ lr_config = dict(
 # runner = dict(type='EpochBasedRunner', max_epochs=total_epochs)
 # checkpoint_config = dict(interval=1)
 
-runner = dict(type='IterBasedRunner', max_iters=50)  # DiffBEV : 200,000
+runner = dict(type='IterBasedRunner', max_iters=150000)  # DiffBEV : 200,000
 
 evaluation = dict(
-    interval=50,
+    interval=50000,
     by_epoch=False,
     pipeline=test_pipeline
 )
 
 checkpoint_config = dict(
     by_epoch=False,
-    interval=50,
+    interval=50000,
     max_keep_ckpts=3,
     save_last=True
 )

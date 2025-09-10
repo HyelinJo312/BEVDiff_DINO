@@ -491,6 +491,7 @@ class GroupReducer(nn.Module):
         w = th.softmax(self.logits, dim=-1)             # (c_out,g)
         y = (x * w.view(1,1,self.c_out,self.g)).sum(dim=-1)  # (B,Q,c_out)
         return y
+    
 class MLPReducer(nn.Module):
     """
     Small non-linear projection for extra capacity with few params.

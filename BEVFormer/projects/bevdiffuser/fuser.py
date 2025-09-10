@@ -54,7 +54,7 @@ class CrossAttentionFusion(nn.Module):
 
         # Final linear projection and reshape
         fused = self.W_out(attn_output)              # [B, HW, d_model]
-        fused = fused.permute(0, 2, 1).view(B, C, H, W)  # [B, C, H, W]
+        fused = fused.permute(0, 2, 1).contiguous().view(B, C, H, W)  # [B, C, H, W]
 
         # Add & Norm (residual connection)
         out = self.norm(fused + bev_feat)

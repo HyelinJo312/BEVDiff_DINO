@@ -298,7 +298,7 @@ def main():
     # print(f'Saved {len(sub)} keys to perception_transformer_only.pth')
 
     # Load pretrained BEVFormer weights
-    if args.bev_checkpoint is not None:
+    if args.bev_checkpoint != 'None' and os.path.isfile(args.bev_checkpoint):
         ckpt_path = args.bev_checkpoint
         raw = torch.load(ckpt_path, map_location='cpu')
         state = raw.get('state_dict', raw)

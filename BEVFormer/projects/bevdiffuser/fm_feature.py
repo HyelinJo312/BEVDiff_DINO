@@ -229,7 +229,8 @@ class GetDINOv2Cond(nn.Module):
         x, Hp, Wp, extra_geom = self.image_preprocess(x)
 
         # Dinov2 forward: pass as pixel_values
-        outputs = self.model(pixel_values=x, output_hidden_states=True)
+        with torch.no_grad():
+            outputs = self.model(pixel_values=x, output_hidden_states=True)
         hidden_states = outputs.hidden_states
         hs_selected = hidden_states[-n_layers:] if n_layers > 0 else [hidden_states[-1]]
 
