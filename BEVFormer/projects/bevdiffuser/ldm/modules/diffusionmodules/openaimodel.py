@@ -2,7 +2,8 @@ from abc import abstractmethod
 from functools import partial
 import math
 from typing import Iterable
-
+import os
+import safetensors
 import numpy as np
 import torch as th
 import torch.nn as nn
@@ -20,6 +21,7 @@ from projects.bevdiffuser.ldm.modules.diffusionmodules.util import (
 from projects.bevdiffuser.ldm.modules.attention import SpatialTransformer
 from mmcv.runner import force_fp32, auto_fp16
 from mmcv.utils import TORCH_VERSION, digit_version
+from diffusers.utils.constants import SAFETENSORS_WEIGHTS_NAME
 
 # dummy replace
 def convert_module_to_f16(l):
@@ -492,22 +494,6 @@ class GroupReducer(nn.Module):
         y = (x * w.view(1,1,self.c_out,self.g)).sum(dim=-1)  # (B,Q,c_out)
         return y
     
-class MLPReducer(nn.Module):
-    """
-    Small non-linear projection for extra capacity with few params.
-    """
-    def __init__(self, c_in: int, c_out: int, hidden: int = 128, p_drop: float = 0.1):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(c_in, hidden), nn.GELU(), nn.Dropout(p_drop),
-            nn.Linear(hidden, c_out),
-        )
-
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        """
-        x: (B, Q, c_in) -> (B, Q, c_out)
-        """
-        return self.net(x)
 
 class DINOBevAligner(nn.Module):
     """
@@ -530,13 +516,12 @@ class DINOBevAligner(nn.Module):
         pc_range = (-51.2, -51.2, -5.0, 51.2, 51.2, 3.0),
         num_points_in_pillar=4,
         input_size=518,             # DINO square resize S
+        c_dino=768,               # DINO feature dim
         c_ctx=256,                  # output channels
         reducer='group',            # 'group' | 'linear' | 'mlp'
         post_norm=True,
         post_ln_affine=True,       # recommended True (stability + capacity)
         linear_use_weight_norm=False,
-        mlp_hidden=128,
-        mlp_dropout=0.1,
         eps=1e-6,
     ):
         super().__init__()
@@ -546,6 +531,7 @@ class DINOBevAligner(nn.Module):
         self.pc_range = pc_range
         self.num_points_in_pillar = num_points_in_pillar
         self.S = input_size
+        self.c_dino = c_dino
         self.c_ctx = c_ctx
         self.reducer_kind = reducer
         self.eps = eps
@@ -562,9 +548,15 @@ class DINOBevAligner(nn.Module):
         # Channel reducer (created lazily with C_dino)
         self.reducer = None
         self.linear_use_weight_norm = linear_use_weight_norm
-        self.mlp_hidden = mlp_hidden
-        self.mlp_dropout = mlp_dropout
-
+        
+        # (B,Q,C_dino) -> (B,Q,C_ctx)
+        hidden = self.c_ctx * 2
+        self.proj = nn.Sequential(
+            nn.Linear(self.c_dino, hidden, bias=False),
+            nn.GELU(),
+            nn.LayerNorm(hidden, elementwise_affine=False),
+            nn.Linear(hidden, self.c_ctx, bias=True),
+        )
     # ---------- BEVFormer-style reference generation ----------
     @staticmethod
     def _get_reference_points(H, W, Z=8, num_points_in_pillar=4, dim='3d', bs=1, device='cuda', dtype=th.float32):
@@ -642,9 +634,6 @@ class DINOBevAligner(nn.Module):
         if self.reducer is None:
             if self.reducer_kind == 'group':
                 self.reducer = GroupReducer(c_in=C_dino, c_out=self.c_ctx).to(device)
-            elif self.reducer_kind == 'mlp':
-                self.reducer = MLPReducer(c_in=C_dino, c_out=self.c_ctx,
-                                          hidden=self.mlp_hidden, p_drop=self.mlp_dropout).to(device)
 
     def _tokens_to_fmap(self, last_tokens, Hp, Wp):
         B, V, N, C = last_tokens.shape
@@ -732,7 +721,7 @@ class DINOBevAligner(nn.Module):
         f_bev = num / den                                                  # (B,Q,C_dino)
 
         # (7) channel reduction (B,Q,C_dino) -> (B,Q,C_ctx)
-        bev_qc = self.reducer(f_bev)                                       # (B,Q,C_ctx)
+        bev_qc = self.proj(f_bev)                                       # (B,Q,C_ctx)
 
         # reshape to (B,C_ctx,H,W)
         bev_feat_ctx = bev_qc.permute(0,2,1).contiguous().view(B, self.c_ctx, self.bev_h, self.bev_w)
@@ -1133,7 +1122,38 @@ class UNetModel(nn.Module):
             return out_list[::-1]
         
         else:
-            return h
+            return h    
+
+
+    def save_pretrained(self, save_directory):
+        if os.path.isfile(save_directory):
+            print(f"Provided path ({save_directory}) should be a directory, not a file")
+            return
+
+        os.makedirs(save_directory, exist_ok=True)
+        weights_name = SAFETENSORS_WEIGHTS_NAME
+        safetensors.torch.save_file(self.state_dict(), os.path.join(save_directory, weights_name), metadata={"format": "pt"})
+        
+    def from_pretrained(self, pretrained_model_name_or_path, subfolder=None):
+        weights_name = SAFETENSORS_WEIGHTS_NAME
+        if os.path.isfile(pretrained_model_name_or_path):
+            checkpoint_file = pretrained_model_name_or_path
+        elif os.path.isdir(pretrained_model_name_or_path):
+            if os.path.isfile(os.path.join(pretrained_model_name_or_path, weights_name)):
+                checkpoint_file = os.path.join(pretrained_model_name_or_path, weights_name)
+            elif subfolder is not None and os.path.isfile(
+            os.path.join(pretrained_model_name_or_path, subfolder, weights_name)):
+                checkpoint_file = os.path.join(pretrained_model_name_or_path, subfolder, weights_name)
+        else:
+            print(f"Error no file named {weights_name} found in directory {pretrained_model_name_or_path}.")
+            return
+        state_dict = safetensors.torch.load_file(checkpoint_file, device="cpu")
+        try:
+            self.load_state_dict(state_dict, strict=True)
+            print('successfully load the entire model')
+        except:
+            print('not successfully load the entire model, try to load part of model')
+            self.load_state_dict(state_dict, strict=False)
 
     
 

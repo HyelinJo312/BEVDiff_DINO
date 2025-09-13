@@ -22,12 +22,12 @@ from projects.bevdiffuser.fm_feature import GetDINOv2Cond
 class BEVDiffuser(BEVFormer): 
     def __init__(self,
                  *args,
-                 cond_module=None,
+                 get_dino=None,
                  **kwargs):
         
         super().__init__(*args, **kwargs)
 
-        self.cond_module = GetDINOv2Cond()
+        self.get_dino = GetDINOv2Cond()
     
 
     def forward(self, return_loss=True, **kwargs):
@@ -100,11 +100,11 @@ class BEVDiffuser(BEVFormer):
         img_feats = self.extract_feat(img=img, img_metas=img_metas)
         losses = dict()
 
-        dino_outputs = self.cond_module(img, img_metas, 4)
+        dino_feats = self.get_dino(img, img_metas, 4)
         
         losses_pts = self.forward_pts_train(img_feats, gt_bboxes_3d,
                                             gt_labels_3d, img_metas,
-                                            gt_bboxes_ignore, prev_bev, dino_outputs, **kwargs)
+                                            gt_bboxes_ignore, prev_bev, dino_feats, **kwargs)
 
         losses.update(losses_pts)
         return losses
@@ -212,10 +212,10 @@ class BEVDiffuser(BEVFormer):
             img_metas[0][0]['can_bus'][-1] = 0
             img_metas[0][0]['can_bus'][:3] = 0
 
-        dino_outputs = self.cond_module(img[0], img_metas[0], 4)
+        dino_feats = self.get_dino(img[0], img_metas[0], 4)
         
         new_prev_bev, bbox_results = self.simple_test(
-            img_metas[0], img[0], prev_bev=self.prev_frame_info['prev_bev'], cond=dino_outputs, **kwargs)
+            img_metas[0], img[0], prev_bev=self.prev_frame_info['prev_bev'], cond=dino_feats, **kwargs)
             
         # During inference, we save the BEV features and ego motion of each timestamp.
         self.prev_frame_info['prev_pos'] = tmp_pos
