@@ -9,7 +9,8 @@
 import copy
 import torch
 import torch.nn as nn
-
+import os
+import math
 from mmcv.cnn import Linear, bias_init_with_prob
 from mmcv.utils import TORCH_VERSION, digit_version
 from mmdet.core import (multi_apply, multi_apply, reduce_mean)
@@ -27,11 +28,6 @@ from diffusers import DDPMScheduler, DDIMScheduler
 from projects.bevdiffuser.scheduler_utils import DDIMGuidedScheduler
 from projects.bevdiffuser.layout_diffusion.layout_diffusion_unet import LayoutDiffusionUNetModel
 from projects.bevdiffuser.multiscale_concat import MultiScaleConcat
-from projects.bevdiffuser.fuser import CrossAttentionFusion, ConcatFusion
-# FUSERS = Registry('fuser')
-# FUSERS.register_module(CrossAttentionFusion)
-# FUSERS.register_module(ConcatFusion)
-
 
 
 @HEADS.register_module()
@@ -60,16 +56,20 @@ class BEVDiffuserHead(BEVFormerHead):
             raise ValueError("`unet` config is required for BEVDiffuserHead")
         # self.unet = build_unet(ConfigDict(unet))
         self.unet = instantiate_from_config(ConfigDict(unet))
-        pretrained = unet.get('pretrained', None)
-        if pretrained:
-            state = torch.load(pretrained, map_location='cpu')
-            self.unet.load_state_dict(state, strict=False)
+        if unet.pretrained is not None and os.path.isfile(unet.pretrained) or os.path.isdir(unet.pretrained):
+            self.unet.from_pretrained(unet.pretrained, subfolder="unet")
+            # train only the downsample and upsample layers
+            self.unet.requires_grad_(False)
+            self.unet.downsample_blocks.requires_grad_(True)
+            self.unet.upsample_blocks.requires_grad_(True)
+            self.unet.eval()
+            print("Successfully load unet checkpoint from ", unet.pretrained)
 
         self.fuser = build_from_cfg(fuser, FUSERS) if isinstance(fuser, dict) else fuser
 
         self.denoise_loss_weight = float(denoise_loss_weight)
         self.return_multiscale = return_multiscale
-        self.multi_scale_concat = MultiScaleConcat(in_chs=(256, 512, 1024), out_dim=256, pick_idxs=(0, 1, 2), target_idx=0)
+        self.multi_scale_concat = MultiScaleConcat(in_chs=(256,512,1024), out_dim=256, mid=256, use_concat=True)
         
         # Load scheduler, tokenizer and models.
         self.noise_scheduler = DDPMScheduler.from_pretrained(
@@ -82,43 +82,39 @@ class BEVDiffuserHead(BEVFormerHead):
         if noise_scheduler.prediction_type == 'sample':
             self.noise_scheduler.register_to_config(prediction_type='sample')
             self.infer_scheduler.register_to_config(prediction_type='sample')
-
+            
+        self.curr_epoch = 0
+        self.total_epochs = 1
+        self.curriculum_t = dict(         
+            t_min=20,
+            t_max=600,
+            schedule='cosine',  # or 'linear' / 'poly'
+            power=1.0,
+        )
+    
         # self.noise_scheduler = self._build_noise_scheduler(noise_scheduler)
         # self.infer_scheduler = self._build_noise_scheduler(infer_scheduler)
 
         # self._disable_inplace(self)
-
-    def _build_noise_scheduler(self, cfg):
-        if cfg is None:
-            return None
-        t = cfg.get('type', '')
-        if t == 'DDPMScheduler':
-            from diffusers import DDPMScheduler
-            sch = DDPMScheduler.from_pretrained(
-                cfg['from_pretrained'],
-                subfolder=cfg.get('subfolder', 'scheduler'))
-            if 'prediction_type' in cfg and cfg['prediction_type'] is not None:
-                sch.register_to_config(prediction_type=cfg['prediction_type'])
-            return sch
-        elif t == 'DDIMGuidedScheduler':
-            from projects.bevdiffuser.scheduler_utils import DDIMGuidedScheduler
-            sch = DDIMGuidedScheduler.from_pretrained(
-                cfg['from_pretrained'],
-                subfolder=cfg.get('subfolder', 'scheduler'))
-            if 'prediction_type' in cfg and cfg['prediction_type'] is not None:
-                sch.register_to_config(prediction_type=cfg['prediction_type'])
-            return sch
-        else:
-            raise ValueError(f'Unknown noise scheduler type: {t}')
-
-
-    @staticmethod
-    def _disable_inplace(module: nn.Module):
-        # ReLU(inplace=True) 같은 것을 전부 inplace=False로 바꿔 autograd 안전성 확보
-        for m in module.modules():
-            if isinstance(m, nn.ReLU) and getattr(m, 'inplace', False):
-                m.inplace = False
+    
+    def set_epoch(self, curr, total):
+        self.curr_epoch = int(curr)
+        self.total_epochs = max(int(total), 1)
         
+    @staticmethod
+    def _compute_curriculum_t(T, curr_epoch, total_epochs, t_min, t_max, power=1.0, schedule='cosine'):
+        total_epochs = max(int(total_epochs), 1)
+        e = min(max(int(curr_epoch), 0), total_epochs-1)
+        prog = 0.0 if total_epochs <= 1 else (e / (total_epochs - 1 + 1e-9))  # [0,1]
+        if schedule == 'cosine':
+            frac = (math.cos(0.5 * math.pi * prog)) ** power
+        elif schedule == 'linear':
+            frac = (1.0 - prog) ** power
+        else:  # 'poly' 등
+            frac = (1.0 - prog) ** power
+        t_cont = t_min + frac * (t_max - t_min)
+        t_idx = int(round(t_cont))
+        return max(0, min(T-1, t_idx))
 
     def compute_denoise(self, latents, **cond):
         assert self.noise_scheduler is not None, \
@@ -145,7 +141,7 @@ class BEVDiffuserHead(BEVFormerHead):
 
         # Multi-scale features
         if self.return_multiscale:  # UNet input: noisy_latents=(B, C, H, W)
-            denoise_results = self.unet(noisy_latents, timesteps, **cond) # layout diffusion: self.unet(noisy_latents, timesteps, **cond)[0] /  DINO diffusion: self.unet(noisy_latents, timesteps, **cond)
+            denoise_results = self.unet(noisy_latents, timesteps, **cond) 
             multi_feats = self.multi_scale_concat(denoise_results)
             pred = denoise_results[0]
         else:
@@ -156,7 +152,83 @@ class BEVDiffuserHead(BEVFormerHead):
         # return pred, denoise_loss
         return multi_feats, denoise_loss
 
+    def denoise_bev(self, latents, cond, img_metas, **kwargs):
+        """
+        Evaluation-time denoising (DDIM + CFG + optional task-guidance).
+        Args:
+            latents: (B, C, H, W) encoder BEV feature (no grad path)
+            cond:    conditioning dict for UNet
+            img_metas, **kwargs: passed down for optional task guidance
+        Returns:
+            denoised_bev: (B, C, H, W)
+        """
+        
+        if (self.unet is None) or (self.infer_scheduler is None):
+            return latents
 
+        diff_cfg = getattr(self, 'test_cfg', {}).get('diffusion', {})
+        noise_timesteps     = int(diff_cfg.get('noise_timesteps', 0) or 0)
+        denoise_timesteps   = int(diff_cfg.get('denoise_timesteps', 0) or 0)
+        num_inference_steps = int(diff_cfg.get('num_inference_steps', 0) or 0)
+        ddim_sampling_eta = float(diff_cfg.get('ddim_sampling_eta', 1.0) or 0.0)
+        guidance_scale      = float(diff_cfg.get('guidance_scale', 2.0))
+        use_task_guidance   = bool(diff_cfg.get('use_task_guidance', False))
+        
+        max_timestep = self.noise_scheduler.config.num_train_timesteps 
+        denoise_timesteps = max_timestep  # T = 1000 : decide the denoising range 
+
+        def get_dino_uncond(dino_out):
+            uncond = {k: v.clone() if isinstance(v, torch.Tensor) else v
+                     for k, v in cond.items()}
+            last_cls_u = torch.zeros_like(dino_out['last_cls'])  # (B,V,C_in)
+            last_tokens_u = torch.zeros_like(dino_out['last_tokens'])  # (B,V,N,C_in)
+            uncond['last_cls'] = last_cls_u
+            uncond['last_tokens'] = last_tokens_u
+            return uncond
+
+        if noise_timesteps > 0:
+            if noise_timesteps > 1000:
+                latents = torch.randn_like(latents)
+                if hasattr(self.infer_scheduler, 'init_noise_sigma'):
+                    latents = latents * self.infer_scheduler.init_noise_sigma
+            else:
+                noise = torch.randn_like(latents)
+                noise_timesteps = torch.tensor(noise_timesteps, device=latents.device, dtype=torch.long)
+                latents = self.infer_scheduler.add_noise(latents, noise, noise_timesteps)
+
+        # DDIM sampling
+        if denoise_timesteps > 0 and num_inference_steps > 0:
+            uncond = get_dino_uncond(cond) 
+
+            self.infer_scheduler.config.num_train_timesteps = int(denoise_timesteps)  # range of denoising
+            self.infer_scheduler.set_timesteps(num_inference_steps=num_inference_steps)  # stride for denoising e.g., 600->400->200, 3->2->1
+            
+            t_min = int(self.curriculum_t.get('t_min', 10))
+            t_max = int(self.curriculum_t.get('t_max', 600))
+            power = float(self.curriculum_t.get('power', 1.0))
+            sched = str(self.curriculum_t.get('schedule', 'cosine'))
+            t_idx = self._compute_curriculum_t(
+                denoise_timesteps, self.curr_epoch, self.total_epochs,
+                t_min=max(0, min(denoise_timesteps-1, t_min)),
+                t_max=max(0, min(denoise_timesteps-1, t_max)),
+                power=power, schedule=sched
+            )
+            
+            self.infer_scheduler.timesteps = torch.tensor([t_idx], device=latents.device, dtype=torch.long)
+
+            for t in self.infer_scheduler.timesteps:
+                t_batch = torch.full((latents.shape[0],), int(t), device=latents.device, dtype=torch.long)
+                denoise_results = self.unet(latents, t_batch, **cond) 
+                multi_feats = denoise_results
+                noise_pred_cond  = denoise_results[0]
+                noise_pred_uncond = self.unet(latents, t_batch, **uncond)[0]
+                noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+                # classifier_gradient = None
+                # if use_task_guidance:
+                #     classifier_gradient = self._classifier_guidance_grad(latents, img_metas=img_metas, **kwargs)
+                latents = self.infer_scheduler.step(noise_pred, t, latents, eta=0.0, return_dict=False)[0]
+                    
+        return latents, multi_feats
 
     @auto_fp16(apply_to=('mlvl_feats'))
     def forward(self, mlvl_feats, img_metas, prev_bev=None, only_bev=False, dino_feats=None, **kwargs):
@@ -204,21 +276,15 @@ class BEVDiffuserHead(BEVFormerHead):
         # (B, HW, C) -> (B, C, H, W)
         bev_embed = bev_embed.view(B, H, W, C).permute(0, 3, 1, 2).contiguous()
 
-        latents = bev_embed.clone().detach()
-
+        # latents = bev_embed.clone().detach()  # need to remove detach() later
+        latents = bev_embed.clone()
+        
         cond = dino_feats
 
         denoise_loss = None
 
-        # Training: add noise -> UNet -> denoised
-        # if return_loss:
-        if self.training:
-            multi_feats, denoise_loss = self.compute_denoise(latents, **cond)
-            denoised_bev = multi_feats    # B, C, H, W
-        # Evaluation: DDIM sampling
-        else:
-            with torch.no_grad():
-                denoised_bev = self.denoise_eval(latents, cond, img_metas, **kwargs)
+        latents, multi_feats = self.denoise_bev(latents, cond, img_metas, **kwargs)
+        denoised_bev = self.multi_scale_concat(multi_feats)
 
         # Fuser: (original, denoised) -> fused (B,C,H,W)
         fused_bev = self.fuser(bev_embed, denoised_bev) if self.fuser is not None else denoised_bev
@@ -286,68 +352,6 @@ class BEVDiffuserHead(BEVFormerHead):
             outs['denoise_loss'] = denoise_loss
 
         return outs
-
-
-    def denoise_eval(self, latents, cond, img_metas, **kwargs):
-        """
-        Evaluation-time denoising (DDIM + CFG + optional task-guidance).
-        Args:
-            latents: (B, C, H, W) encoder BEV feature (no grad path)
-            cond:    conditioning dict for UNet
-            img_metas, **kwargs: passed down for optional task guidance
-        Returns:
-            denoised_bev: (B, C, H, W)
-        """
-        
-        if (self.unet is None) or (self.infer_scheduler is None):
-            return latents
-
-        diff_cfg = getattr(self, 'test_cfg', {}).get('diffusion', {})
-        noise_timesteps     = int(diff_cfg.get('noise_timesteps', 0) or 0)
-        denoise_timesteps   = int(diff_cfg.get('denoise_timesteps', 0) or 0)
-        num_inference_steps = int(diff_cfg.get('num_inference_steps', 0) or 0)
-        ddim_sampling_eta = float(diff_cfg.get('ddim_sampling_eta', 1.0) or 0.0)
-        guidance_scale      = float(diff_cfg.get('guidance_scale', 2.0))
-        use_task_guidance   = bool(diff_cfg.get('use_task_guidance', False))
-
-        def get_dino_uncond(dino_out):
-            uncond = {k: v.clone() if isinstance(v, torch.Tensor) else v
-                     for k, v in cond.items()}
-            last_cls_u = torch.zeros_like(dino_out['last_cls'])  # (B,V,C_in)
-            last_tokens_u = torch.zeros_like(dino_out['last_tokens'])  # (B,V,N,C_in)
-            uncond['last_cls'] = last_cls_u
-            uncond['last_tokens'] = last_tokens_u
-            return uncond
-
-        if noise_timesteps > 0:
-            if noise_timesteps > 1000:
-                latents = torch.randn_like(latents)
-                if hasattr(self.infer_scheduler, 'init_noise_sigma'):
-                    latents = latents * self.infer_scheduler.init_noise_sigma
-            else:
-                noise = torch.randn_like(latents)
-                noise_timesteps = torch.tensor(noise_timesteps, device=latents.device, dtype=torch.long)
-                latents = self.infer_scheduler.add_noise(latents, noise, noise_timesteps)
-
-        # DDIM sampling
-        if denoise_timesteps > 0 and num_inference_steps > 0:
-            uncond = get_dino_uncond(cond) 
-
-            self.infer_scheduler.config.num_train_timesteps = int(denoise_timesteps)
-            self.infer_scheduler.set_timesteps(num_inference_steps=num_inference_steps)
-
-            for t in self.infer_scheduler.timesteps:
-                t_batch = torch.full((latents.shape[0],), int(t), device=latents.device, dtype=torch.long)
-                noise_pred_uncond = self.unet(latents, t_batch, **uncond)[0]
-                noise_pred_cond   = self.unet(latents, t_batch, **cond)[0]
-                noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
-                classifier_gradient = None
-                if use_task_guidance:
-                    classifier_gradient = self._classifier_guidance_grad(latents, img_metas=img_metas, **kwargs)
-                latents = self.infer_scheduler.step(noise_pred, t, latents, eta=ddim_sampling_eta, return_dict=False, classifier_gradient=classifier_gradient)[0]
-
-        return latents
-
 
 
     def _get_target_single(self,

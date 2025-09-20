@@ -8,7 +8,7 @@ import numpy as np
 import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
-from einops import repeat
+
 from projects.bevdiffuser.ldm.modules.diffusionmodules.util import (
     checkpoint,
     conv_nd,
@@ -18,12 +18,10 @@ from projects.bevdiffuser.ldm.modules.diffusionmodules.util import (
     normalization,
     timestep_embedding,
 )
-
 from projects.bevdiffuser.ldm.modules.attention import SpatialTransformer
 from mmcv.runner import force_fp32, auto_fp16
 from mmcv.utils import TORCH_VERSION, digit_version
 from diffusers.utils.constants import SAFETENSORS_WEIGHTS_NAME
-# from .attention import SpatialTransformer
 
 # dummy replace
 def convert_module_to_f16(l):
@@ -405,125 +403,96 @@ class QKVAttention(nn.Module):
 
 
 
-# class DINOContextAdapter(nn.Module):
-#     """
-#     Adapt DINOv2 global context (CLS tokens) to UNet time-embedding size.
-
-#     Input:
-#       - context: (B, V, C_in) 
-#     Output:
-#       - context_proj: (B, C_emb)
-
-#     Args:
-#       c_in:   DINO hidden size (e.g., 768 for vitb14)
-#       c_emb:  UNet time-embedding size 
-#       pool:   'mean' | 'max' | 'attn'  (how to pool across views)
-#       dropout: dropout in the MLP head
-#       ln_first / ln_after: LayerNorm before/after projection
-#     """
-#     def __init__(self, c_in: int, c_emb: int,
-#                  pool: str = 'mean',
-#                  dropout: float = 0.0,
-#                  ln_first: bool = True,
-#                  ln_after: bool = True):
-#         super().__init__()
-#         assert pool in ['mean', 'max']
-#         self.pool = pool
-
-#         self.ln_first = nn.LayerNorm(c_in) if ln_first else None
-
-#         # lightweight projection head to emb dim
-#         self.proj = nn.Sequential(
-#             nn.Linear(c_in, c_emb),
-#             nn.GELU(),
-#             nn.Linear(c_emb, c_emb),
-#         )
-#         self.ln_after = nn.LayerNorm(c_emb) if ln_after else None
-
-#     def forward(self, context, mask=None):
-#         """
-#         context: (B, V, C_in) or (B, C_in)
-#         mask:    optional (B, V) boolean; False = ignore that view
-#         returns: (B, C_emb)
-#         """
-#         if context.ndim == 2:
-#             # (B, C_in) -> add V=1
-#             context = context.unsqueeze(1)  # (B, 1, C_in)
-#         elif context.ndim != 3:
-#             raise ValueError(f"context must be (B,C) or (B,V,C), got {context.shape}")
-
-#         B, V, C = context.shape
-
-#         x = context     # (B, V, C_in)
-#         if self.ln_first is not None:
-#             x = self.ln_first(x)  # LN over C
-
-#         if self.pool == 'mean':
-#             g = x.mean(dim=1)     # (B, C)
-
-#         elif self.pool == 'max':
-#             g, _ = x.max(dim=1)   # (B, C)
-
-#         g = self.proj(g)          # (B, C_emb)
-#         if self.ln_after is not None:
-#             g = self.ln_after(g)
-#         return g
-    
-    
 class DINOContextAdapter(nn.Module):
     """
-    Input : context (B, V, C_in) or (B, C_in)
-    Output: (B, C_emb)    
+    Adapt DINOv2 global context (CLS tokens) to UNet time-embedding size.
+
+    Input:
+      - context: (B, V, C_in) 
+    Output:
+      - context_proj: (B, C_emb)
+
+    Args:
+      c_in:   DINO hidden size (e.g., 768 for vitb14)
+      c_emb:  UNet time-embedding size 
+      pool:   'mean' | 'max' | 'attn'  (how to pool across views)
+      dropout: dropout in the MLP head
+      ln_first / ln_after: LayerNorm before/after projection
     """
-    def __init__(self, c_in, c_emb,
-                 pool='mean',          # 'mean' or 'attn'
-                 dropout=0.0,
-                 ln_first=True,
-                 ln_after=True):
+    def __init__(self, c_in: int, c_emb: int,
+                 pool: str = 'mean',
+                 dropout: float = 0.0,
+                 ln_first: bool = True,
+                 ln_after: bool = True):
         super().__init__()
-        assert pool in ['mean', 'attn']
+        assert pool in ['mean', 'max']
         self.pool = pool
-        self.drop = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
-        self.ln_first = nn.LayerNorm(c_in) if ln_first else nn.Identity()
-        self.fc = nn.Sequential(
-            nn.Linear(c_in, c_in, bias=False),
-            nn.GELU(),
-            nn.Linear(c_in, c_in, bias=False),
-        )
-        self.gamma = nn.Parameter(th.ones(c_in) * 1e-4)
 
-        if pool == 'attn':
-            self.score = nn.Linear(c_in, 1, bias=False)
-            self.ln_after_tok = nn.LayerNorm(c_in) if ln_after else nn.Identity()
+        self.ln_first = nn.LayerNorm(c_in) if ln_first else None
 
+        # lightweight projection head to emb dim
         self.proj = nn.Sequential(
-            nn.Linear(c_in, c_emb, bias=False),
+            nn.Linear(c_in, c_emb),
             nn.GELU(),
-            nn.Linear(c_emb, c_emb, bias=False),
+            # nn.Dropout(dropout),
+            nn.Linear(c_emb, c_emb),
         )
+        self.ln_after = nn.LayerNorm(c_emb) if ln_after else None
 
-    def forward(self, context):
-        # context: (B,V,C_in) or (B,C_in)
+    def forward(self, context, mask=None):
+        """
+        context: (B, V, C_in) or (B, C_in)
+        mask:    optional (B, V) boolean; False = ignore that view
+        returns: (B, C_emb)
+        """
         if context.ndim == 2:
-            context = context.unsqueeze(1)         # (B,1,C_in)
+            # (B, C_in) -> add V=1
+            context = context.unsqueeze(1)  # (B, 1, C_in)
+        elif context.ndim != 3:
+            raise ValueError(f"context must be (B,C) or (B,V,C), got {context.shape}")
+
         B, V, C = context.shape
 
-        x = context.reshape(B * V, C)
-        z = self.fc(self.ln_first(x))           # (B*V, C)  
-        x = x + self.gamma * z                     # (B*V, C)
-        x = x.view(B, V, C)
-        # x = self.drop(x)
+        x = context     # (B, V, C_in)
+        if self.ln_first is not None:
+            x = self.ln_first(x)  # LN over C
 
         if self.pool == 'mean':
-            g = x.mean(dim=1)
-        else:  # 'attn'
-            xt = self.ln_after_tok(x)              
-            score = self.score(xt).squeeze(-1)     # (B,V)
-            w = score.softmax(dim=1).unsqueeze(-1) # (B,V,1)
-            g = (x * w).sum(dim=1)                 # (B,C)
-            
-        out = self.proj(g)                         # (B, C_emb)
-        return out
+            g = x.mean(dim=1)     # (B, C)
+
+        elif self.pool == 'max':
+            g, _ = x.max(dim=1)   # (B, C)
+
+        g = self.proj(g)          # (B, C_emb)
+        if self.ln_after is not None:
+            g = self.ln_after(g)
+        return g
+
+
+class GroupReducer(nn.Module):
+    """
+    Channel reduction by learnable softmax-weighted mean inside small groups.
+    Example: 768 -> 256 with group size g=3 (per output channel 3 weights).
+    """
+    def __init__(self, c_in: int, c_out: int):
+        super().__init__()
+        assert c_in % c_out == 0, f"{c_in} not divisible by {c_out}"
+        self.c_in = c_in
+        self.c_out = c_out
+        self.g = c_in // c_out                              # e.g., 3
+        # logits for per-group weights (c_out, g), init ~ 0 -> softmax ~ uniform
+        self.logits = nn.Parameter(th.zeros(c_out, self.g))
+
+    def forward(self, x: th.Tensor) -> th.Tensor:
+        """
+        x: (B, Q, c_in) -> (B, Q, c_out)
+        """
+        B, Q, C = x.shape
+        # x = x.view(B, Q, self.c_out, self.g)               # (B,Q,c_out,g)
+        x = x.reshape(B, Q, self.c_out, self.g)
+        w = th.softmax(self.logits, dim=-1)             # (c_out,g)
+        y = (x * w.view(1,1,self.c_out,self.g)).sum(dim=-1)  # (B,Q,c_out)
+        return y
     
 
 class DINOBevAligner(nn.Module):
@@ -544,42 +513,48 @@ class DINOBevAligner(nn.Module):
         self,
         bev_h=50,
         bev_w=50,
-        cam_view=6,
         pc_range = (-51.2, -51.2, -5.0, 51.2, 51.2, 3.0),
         num_points_in_pillar=4,
         input_size=518,             # DINO square resize S
         c_dino=768,               # DINO feature dim
-        c_ctx=None,                  # output channels
+        c_ctx=256,                  # output channels
+        reducer='group',            # 'group' | 'linear' | 'mlp'
         post_norm=True,
         post_ln_affine=True,       # recommended True (stability + capacity)
+        linear_use_weight_norm=False,
         eps=1e-6,
-        device='cuda'
     ):
         super().__init__()
+        assert reducer in ['group', 'mlp']
         self.bev_h = bev_h
         self.bev_w = bev_w
         self.pc_range = pc_range
         self.num_points_in_pillar = num_points_in_pillar
         self.S = input_size
         self.c_dino = c_dino
-        self.c_ctx = c_dino if c_ctx is None else c_ctx
+        self.c_ctx = c_ctx
+        self.reducer_kind = reducer
         self.eps = eps
 
         # Norms are created lazily with correct feature dim
+        self.post_norm_enabled = post_norm
         self.post_ln_affine = post_ln_affine
         self.pre_ln  = None
-        self.post_ln = nn.LayerNorm(self.c_dino, elementwise_affine=self.post_ln_affine).to(device)
+        self.post_ln = None
 
         # Per-view weights (initialized lazily with V)
-        self._w_view = nn.Parameter(th.zeros(1, cam_view, 1, device=device))
+        self._w_view = None
 
+        # Channel reducer (created lazily with C_dino)
+        self.reducer = None
+        self.linear_use_weight_norm = linear_use_weight_norm
+        
         # (B,Q,C_dino) -> (B,Q,C_ctx)
-        hidden = max(self.c_ctx * 2, 512)
-        # self.proj = nn.Linear(self.c_dino, self.c_ctx, bias=True)
+        hidden = self.c_ctx * 2
         self.proj = nn.Sequential(
-            nn.LayerNorm(self.c_dino, elementwise_affine=True),
             nn.Linear(self.c_dino, hidden, bias=False),
             nn.GELU(),
+            nn.LayerNorm(hidden, elementwise_affine=False),
             nn.Linear(hidden, self.c_ctx, bias=True),
         )
     # ---------- BEVFormer-style reference generation ----------
@@ -637,6 +612,7 @@ class DINOBevAligner(nn.Module):
         depth = cam[..., 2:3]
         bev_mask = (depth > eps)                                                   # (D,B,N,Q,1)
 
+        # 픽셀 좌표 (정규화 X)
         uv = cam[..., 0:2] / th.maximum(depth, th.ones_like(depth) * eps)          # (D,B,N,Q,2)
 
         # (V,B,Q,D,2), (V,B,Q,D)
@@ -646,6 +622,18 @@ class DINOBevAligner(nn.Module):
         th.backends.cuda.matmul.allow_tf32 = allow_tf32
         th.backends.cudnn.allow_tf32 = allow_tf32_cudnn
         return uv, bev_mask
+
+    def _lazy_init_modules(self, C_dino: int, V: int, device):
+        # norms
+        if self.post_norm_enabled and (self.post_ln is None):
+            self.post_ln = nn.LayerNorm(C_dino, elementwise_affine=self.post_ln_affine).to(device)
+        # view weights
+        if self._w_view is None:
+            self._w_view = nn.Parameter(th.zeros(1, V, 1, device=device))  # softplus -> positive
+        # reducer
+        if self.reducer is None:
+            if self.reducer_kind == 'group':
+                self.reducer = GroupReducer(c_in=C_dino, c_out=self.c_ctx).to(device)
 
     def _tokens_to_fmap(self, last_tokens, Hp, Wp):
         B, V, N, C = last_tokens.shape
@@ -668,6 +656,8 @@ class DINOBevAligner(nn.Module):
         Hp, Wp = patch_hw
         assert Hp * Wp == N, f"patch_hw {patch_hw} mismatches N={N}"
         device = last_tokens.device
+
+        self._lazy_init_modules(C_dino, V, device)
 
         # (1) DINO fmap
         fmap = self._tokens_to_fmap(last_tokens, Hp, Wp)  # (B, V, C_dino, Hp, Wp)
@@ -701,6 +691,7 @@ class DINOBevAligner(nn.Module):
         gy = 2.0 * (v_d / (H2 - 1.0)) - 1.0
         grid = th.stack([gx, gy], dim=-1)  # (V,B,Q,D,2)
 
+
         # (4) bilinear sampling
         fmap_v = fmap.view(B*V, C_dino, Hp, Wp)
         grid_v = grid.permute(1,0,2,3,4).contiguous().view(B*V, Q*self.num_points_in_pillar, 1, 2)
@@ -709,9 +700,10 @@ class DINOBevAligner(nn.Module):
         sampled = sampled.squeeze(-1).permute(0,2,1).contiguous().view(B, V, Q, self.num_points_in_pillar, C_dino)
 
         # (5) post-norm
-        t = sampled.view(-1, C_dino)
-        t = self.post_ln(t)
-        sampled = t.view(B, V, Q, self.num_points_in_pillar, C_dino)
+        if self.post_ln is not None:
+            t = sampled.view(-1, C_dino)
+            t = self.post_ln(t)
+            sampled = t.view(B, V, Q, self.num_points_in_pillar, C_dino)
 
         # (6) pillar mean + view-weighted mean
         mask = mask_bv.to(device).permute(1,0,2,3).unsqueeze(-1).float()  # (B,V,Q,D,1)
@@ -778,7 +770,7 @@ class UNetModel(nn.Module):
         num_res_blocks,
         attention_resolutions,  # attention_ds
         dropout=0,
-        channel_mult=(1, 2, 4),
+        channel_mult=(1, 2, 4, 8),
         conv_resample=True,
         dims=2,
         num_classes=None,
@@ -795,13 +787,12 @@ class UNetModel(nn.Module):
         use_new_attention_order=False,
         use_spatial_transformer=False,    # custom transformer support
         transformer_depth=1,              # custom transformer support
-        context_dim=768,                 # custom transformer support
+        context_dim=256,                 # custom transformer support
         dino_dim=768,
         n_embed=None,                     # custom support for prediction of discrete ids into codebook of first stage vq model
         legacy=True,
     ):
         super().__init__()
-        
         if use_spatial_transformer:
             assert context_dim is not None, 'Fool!! You forgot to include the dimension of your cross-attention conditioning...'
 
@@ -837,6 +828,7 @@ class UNetModel(nn.Module):
         self.num_heads_upsample = num_heads_upsample
         self.predict_codebook_ids = n_embed is not None
         
+
         # multi-scale features index
         self.return_multiscale = return_multiscale
 
@@ -848,10 +840,8 @@ class UNetModel(nn.Module):
         )
         
         # DINO feature condition
-        # self.adapter = DINOContextAdapter(c_in=dino_dim, c_emb=time_embed_dim, pool='mean')
         self.adapter = DINOContextAdapter(c_in=dino_dim, c_emb=time_embed_dim, pool='mean')
-        self.aligner = DINOBevAligner(c_dino=dino_dim, c_ctx=None)
-
+        self.aligner = DINOBevAligner(c_ctx=context_dim)
 
         self.downsample_blocks = nn.ModuleList([])
         self.upsample_blocks = nn.ModuleList([])
@@ -868,11 +858,15 @@ class UNetModel(nn.Module):
             self.label_emb = nn.Embedding(num_classes, time_embed_dim)
 
         ch = input_ch = int(channel_mult[0] * model_channels)
-
+        # self.input_blocks = nn.ModuleList(
+        #     [TimestepEmbedSequential(
+        #             conv_nd(dims, in_channels, model_channels, 3, padding=1)
+        #         )
+        #     ]
+        # )
         self.input_blocks = nn.ModuleList(
             [TimestepEmbedSequential(conv_nd(dims, in_channels, ch, 3, padding=1))]
         )
-        self.input_blocks[0].ctx_ds = 1
         # self._feature_size = model_channels
         # input_block_chans = [model_channels]
         # ch = model_channels
@@ -914,22 +908,29 @@ class UNetModel(nn.Module):
                             ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim
                         )
                     )
-                block = TimestepEmbedSequential(*layers)
-                block.ctx_ds = ds    
-                self.input_blocks.append(block)
-                # self.input_blocks.append(TimestepEmbedSequential(*layers))
+                self.input_blocks.append(TimestepEmbedSequential(*layers))
                 self._feature_size += ch
                 input_block_chans.append(ch)
             if level != len(channel_mult) - 1:
                 out_ch = ch
-                down = (ResBlock(
-                            ch, time_embed_dim, dropout, out_channels=out_ch,
-                            dims=dims, use_checkpoint=use_checkpoint, use_scale_shift_norm=use_scale_shift_norm, down=True,
-                        ) if resblock_updown else
-                        Downsample(ch, conv_resample, dims=dims, out_channels=out_ch))
-                block = TimestepEmbedSequential(down)
-                block.ctx_ds = ds  
-                self.input_blocks.append(block)
+                self.input_blocks.append(
+                    TimestepEmbedSequential(
+                        ResBlock(
+                            ch,
+                            time_embed_dim,
+                            dropout,
+                            out_channels=out_ch,
+                            dims=dims,
+                            use_checkpoint=use_checkpoint,
+                            use_scale_shift_norm=use_scale_shift_norm,
+                            down=True,
+                        )
+                        if resblock_updown
+                        else Downsample(
+                            ch, conv_resample, dims=dims, out_channels=out_ch
+                        )
+                    )
+                )
                 ch = out_ch
                 input_block_chans.append(ch)
                 ds *= 2
@@ -972,7 +973,6 @@ class UNetModel(nn.Module):
                 use_scale_shift_norm=use_scale_shift_norm,
             ),
         )
-        self.middle_block.ctx_ds = ds
         self._feature_size += ch
 
         self.output_blocks = nn.ModuleList([])
@@ -1030,10 +1030,7 @@ class UNetModel(nn.Module):
                         else Upsample(ch, conv_resample, dims=dims, out_channels=out_ch, out_size=int(self.image_size // ds))
                     )
                     ds //= 2
-                block = TimestepEmbedSequential(*layers)
-                block.ctx_ds = ds 
-                self.output_blocks.append(block)
-                # self.output_blocks.append(TimestepEmbedSequential(*layers))
+                self.output_blocks.append(TimestepEmbedSequential(*layers))
                 self._feature_size += ch
 
         self.out = nn.Sequential(
@@ -1058,6 +1055,16 @@ class UNetModel(nn.Module):
         self.adapter.apply(convert_module_to_f16)
         self.aligner.apply(convert_module_to_f16)
 
+    def convert_to_fp32(self):
+        """
+        Convert the torso of the model to float32.
+        """
+        self.input_blocks.apply(convert_module_to_f32)
+        self.middle_block.apply(convert_module_to_f32)
+        self.output_blocks.apply(convert_module_to_f32)
+        self.adapter.apply(convert_module_to_f32)
+        self.aligner.apply(convert_module_to_f32)
+
     def forward(self, x, timesteps=None, last_cls=None, last_tokens=None, img_metas=None, patch_hw=None, dino_geom=None, **kwargs):
         """
         Apply the model to an input batch.
@@ -1072,36 +1079,35 @@ class UNetModel(nn.Module):
         hs = []
 
         t_emb = timestep_embedding(timesteps, self.model_channels)
-        emb = self.time_embed(t_emb) # emb.shape = [B, 1024]
+        emb = self.time_embed(t_emb) # emb.shape = [1, 1024]
 
         # global condition
         global_cond_proj = self.adapter(last_cls)
         emb = emb + global_cond_proj
 
-        # local condition => last_tokens: (B,V,N,C_dino), patch_hw=(Hp,Wp)
-        bev_ctx = self.aligner(last_tokens, patch_hw=patch_hw, img_metas=img_metas, dino_geom=dino_geom)  # (B,768,50,50)
-        tokens_by_ds = {}
-        for ds_key in self.attention_resolutions[::-1]:
-            target_hw = int(self.image_size // ds_key)  # 50//1=50, 50//2=25, 50//4=12
-            tokens_by_ds[ds_key] = self._ctx_tokens_from_bev(bev_ctx, target_hw)  # (B, target_hw*target_hw, 256)
-        
+        # local condition
+        # last_tokens: (B,V,N,C_dino), patch_hw=(Hp,Wp)
+        bev_ctx = self.aligner(last_tokens, patch_hw=patch_hw, img_metas=img_metas, dino_geom=dino_geom)  # (B,256,50,50)
+        ctx_tokens = bev_ctx.flatten(2).transpose(1, 2).contiguous().to(self.dtype)  # (B, 2500, 256)
+
+        # if self.num_classes is not None:
+        #     assert y.shape == (x.shape[0],)
+        #     emb = emb + self.label_emb(y)
+
         h = x.type(self.dtype)
         for module in self.downsample_blocks:
             h = module(h)
 
         for module in self.input_blocks:
-            ctx_tokens = self._select_ctx(tokens_by_ds, module)
             # import pdb; pdb.set_trace()
             h = module(h, emb, ctx_tokens)  ## suraj: error happening inside kitti at this line
             hs.append(h)
 
-        ctx_tokens_mid = self._select_ctx(tokens_by_ds, self.middle_block)
-        h = self.middle_block(h, emb, ctx_tokens_mid)
+        h = self.middle_block(h, emb, ctx_tokens)
         out_list = []
 
         for i_out, module in enumerate(self.output_blocks):
             h = th.cat([h, hs.pop()], dim=1)
-            ctx_tokens = self._select_ctx(tokens_by_ds, module)
             h = module(h, emb, ctx_tokens)
             if self.return_multiscale and i_out in [1, 4]:
                 out_list.append(h)
@@ -1114,29 +1120,9 @@ class UNetModel(nn.Module):
         if self.return_multiscale:
             out_list.append(h)
             return out_list[::-1]
+        
         else:
             return h    
-
-
-    def _ctx_tokens_from_bev(self, bev_ctx: th.Tensor, size_hw: int):
-        """
-        bev_ctx: (B, 256, 50, 50)
-        size_hw: (int) 50, 25, 12
-        return:  (B, size_hw*size_hw, 256) -> self.dtype
-        """
-        if bev_ctx.shape[-1] != size_hw or bev_ctx.shape[-2] != size_hw:
-            bev_ctx_s = F.adaptive_avg_pool2d(bev_ctx, (size_hw, size_hw))
-        else:
-            bev_ctx_s = bev_ctx
-        return bev_ctx_s.flatten(2).transpose(1, 2).contiguous().to(self.dtype)
-
-    def _select_ctx(self, tokens_by_ds: dict, module: nn.Module):
-        ds = getattr(module, "ctx_ds", 1)
-        if ds in tokens_by_ds:
-            return tokens_by_ds[ds]
-        nearest = min(tokens_by_ds.keys(), key=lambda k: abs(k - ds))
-        return tokens_by_ds[nearest]
-
 
 
     def save_pretrained(self, save_directory):

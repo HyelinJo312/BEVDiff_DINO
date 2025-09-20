@@ -123,6 +123,10 @@ def parse_args():
     parser.add_argument('--bev_checkpoint', 
                         default="",
                         help='checkpoint file')
+    
+    parser.add_argument('--unet_checkpoint', 
+                    default="",
+                    help='checkpoint file')
 
 
     args = parser.parse_args()
@@ -298,7 +302,7 @@ def main():
     # print(f'Saved {len(sub)} keys to perception_transformer_only.pth')
 
     # Load pretrained BEVFormer weights
-    if args.bev_checkpoint != 'None' and os.path.isfile(args.bev_checkpoint):
+    if args.bev_checkpoint is not None and os.path.isfile(args.bev_checkpoint):
         ckpt_path = args.bev_checkpoint
         raw = torch.load(ckpt_path, map_location='cpu')
         state = raw.get('state_dict', raw)
@@ -327,6 +331,10 @@ def main():
         logger.info(f'[Transformer partial load] loaded={len(sub_state)} '
                 f'missing_after_load={len(missing)} unexpected={len(unexpected)} '
                 f'skipped_shape={len(skipped_shape)} skipped_missing={len(skipped_missing)}')
+        
+    if args.unet_checkpoint is not None and os.path.isfile(args.unet_checkpoint) or os.path.isdir(args.unet_checkpoint):
+        cfg.model.pts_bbox_head.unet.pretrained = args.unet_checkpoint
+        logger.info(f'Load unet checkpoint from {args.unet_checkpoint}')
 
 
     dataset_default_args = {

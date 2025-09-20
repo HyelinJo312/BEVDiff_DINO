@@ -115,37 +115,153 @@ def checkpoint(func, inputs, params, flag):
     else:
         return func(*inputs)
 
-
+from torch.cuda.amp import autocast
 class CheckpointFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, run_function, length, *args):
-        ctx.run_function = run_function
+        ctx.run_function  = run_function
         ctx.input_tensors = list(args[:length])
-        ctx.input_params = list(args[length:])
 
+        # --- (A) params: 전체, mask, trainable만 저장
+        params_all   = list(args[length:])
+        trainable_ms = [getattr(p, "requires_grad", False) for p in params_all]
+        ctx.params_all          = params_all
+        ctx.params_trainable_ms = trainable_ms
+        ctx.params_trainable    = [p for p, m in zip(params_all, trainable_ms) if m]
+
+        # --- (B) AMP 상태 저장 (GPU autocast)
+        ctx.autocast_enabled = torch.is_autocast_enabled()
+        try:
+            ctx.autocast_dtype = torch.get_autocast_gpu_dtype()
+        except AttributeError:
+            # PyTorch < 2.0 대비
+            ctx.autocast_dtype = torch.float16
+
+        # 순전파는 activation 저장 없이 수행
         with torch.no_grad():
             output_tensors = ctx.run_function(*ctx.input_tensors)
         return output_tensors
 
     @staticmethod
     def backward(ctx, *output_grads):
-        ctx.input_tensors = [x.detach().requires_grad_(True) for x in ctx.input_tensors]
+        # 입력을 leaf + requires_grad=True로 재구축
+        inp = [x.detach().requires_grad_(True) for x in ctx.input_tensors]
+
+        # AMP 상태를 재현해 반정밀로 재계산 (메모리↓)
         with torch.enable_grad():
-            # Fixes a bug where the first op in run_function modifies the
-            # Tensor storage in place, which is not allowed for detach()'d
-            # Tensors.
-            shallow_copies = [x.view_as(x) for x in ctx.input_tensors]
-            output_tensors = ctx.run_function(*shallow_copies)
-        input_grads = torch.autograd.grad(
-            output_tensors,
-            ctx.input_tensors + ctx.input_params,
-            output_grads,
+            with autocast(enabled=ctx.autocast_enabled, dtype=ctx.autocast_dtype):
+                # in-place 방지용 얕은 복사
+                shallow = [x.view_as(x) for x in inp]
+                out     = ctx.run_function(*shallow)
+
+        # grad 타깃: 입력 + "trainable params"만
+        targets = inp + ctx.params_trainable
+        grads_all = torch.autograd.grad(
+            outputs=out,
+            inputs=targets,
+            grad_outputs=output_grads,
             allow_unused=True,
         )
-        del ctx.input_tensors
-        del ctx.input_params
-        del output_tensors
-        return (None, None) + input_grads
+
+        n_in = len(inp)
+        grads_inputs = list(grads_all[:n_in])
+        grads_params_tr = list(grads_all[n_in:])
+
+        # 원래 params 배열 길이에 맞춰 동결 자리엔 None 채우기
+        grads_params_full = []
+        it = iter(grads_params_tr)
+        for is_tr in ctx.params_trainable_ms:
+            grads_params_full.append(next(it) if is_tr else None)
+
+        # 참조 해제
+        del ctx.input_tensors, ctx.params_all, ctx.params_trainable_ms, ctx.params_trainable, out
+
+        # (None, None)은 run_function, length 자리에 해당
+        return (None, None) + tuple(grads_inputs) + tuple(grads_params_full)
+
+# class CheckpointFunction(torch.autograd.Function):
+#     @staticmethod
+#     def forward(ctx, run_function, length, *args):
+#         ctx.run_function = run_function
+#         ctx.input_tensors = list(args[:length])
+#         ctx.input_params = list(args[length:])
+
+#         with torch.no_grad():
+#             output_tensors = ctx.run_function(*ctx.input_tensors)
+#         return output_tensors
+
+#     @staticmethod
+#     def backward(ctx, *output_grads):
+#         ctx.input_tensors = [x.detach().requires_grad_(True) for x in ctx.input_tensors]
+#         with torch.enable_grad():
+#             # Fixes a bug where the first op in run_function modifies the
+#             # Tensor storage in place, which is not allowed for detach()'d
+#             # Tensors.
+#             shallow_copies = [x.view_as(x) for x in ctx.input_tensors]
+#             output_tensors = ctx.run_function(*shallow_copies)
+#         input_grads = torch.autograd.grad(
+#             output_tensors,
+#             ctx.input_tensors + ctx.input_params,
+#             output_grads,
+#             allow_unused=True,
+#         )
+#         del ctx.input_tensors
+#         del ctx.input_params
+#         del output_tensors
+#         return (None, None) + input_grads
+    
+# class CheckpointFunction(torch.autograd.Function):
+#     @staticmethod
+#     def forward(ctx, run_function, length, *args):
+#         ctx.run_function   = run_function
+#         ctx.input_tensors  = list(args[:length])
+#         params_all         = list(args[length:])
+        
+#         trainable_mask = [getattr(p, "requires_grad", False) for p in params_all]
+#         ctx.input_params_all        = params_all               # 원본 전체
+#         ctx.input_params_mask       = trainable_mask           # True면 trainable
+#         ctx.input_params_trainable  = [p for p, m in zip(params_all, trainable_mask) if m]
+
+#         with torch.no_grad():
+#             output_tensors = ctx.run_function(*ctx.input_tensors)
+#         return output_tensors
+
+#     @staticmethod
+#     def backward(ctx, *output_grads):
+#         ctx.input_tensors = [x.detach().requires_grad_(True) for x in ctx.input_tensors]
+
+#         with torch.enable_grad():
+#             shallow_copies  = [x.view_as(x) for x in ctx.input_tensors]
+#             output_tensors  = ctx.run_function(*shallow_copies)
+
+#         grad_inputs_targets = ctx.input_tensors + ctx.input_params_trainable
+
+#         grads_all = torch.autograd.grad(
+#             outputs=output_tensors,
+#             inputs=grad_inputs_targets,
+#             grad_outputs=output_grads,
+#             allow_unused=True,
+#         )
+
+#         n_in   = len(ctx.input_tensors)
+#         grads_inputs = list(grads_all[:n_in])
+#         grads_params_trainable = list(grads_all[n_in:])
+
+#         grads_params_full = []
+#         it = iter(grads_params_trainable)
+#         for is_trainable in ctx.input_params_mask:
+#             if is_trainable:
+#                 grads_params_full.append(next(it))
+#             else:
+#                 grads_params_full.append(None)
+
+#         del ctx.input_tensors
+#         del ctx.input_params_all
+#         del ctx.input_params_mask
+#         del ctx.input_params_trainable
+#         del output_tensors
+#         return (None, None) + tuple(grads_inputs) + tuple(grads_params_full)
+
 
 
 def timestep_embedding(timesteps, dim, max_period=10000, repeat_only=False):

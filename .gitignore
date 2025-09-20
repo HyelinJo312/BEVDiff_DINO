@@ -49,6 +49,8 @@ checkpoints/
 data/
 ckpts/
 results/
+results_pretrain/
+results_stage2/
 *.safetensors
 *.pt
 *.pth

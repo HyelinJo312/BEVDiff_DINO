@@ -25,13 +25,13 @@ custom_imports = dict(
 )
 
 custom_hooks = [
-    dict(type='IterTimerHook', priority='VERY_HIGH'),
-    dict(
-        type='FixUnetLrHook',
-        unet_lr=1e-4,
-        unet_attr_path='pts_bbox_head.unet',  
-        priority='VERY_LOW',
-    ),
+    dict(type='DiffusionCurriculumHook', head_attr_path='pts_bbox_head')
+    # dict(
+    #     type='FixUnetLrHook',
+    #     unet_lr=1e-4,
+    #     unet_attr_path='pts_bbox_head.unet',  
+    #     priority='VERY_LOW',
+    # ),
 ]
 
 plugin = True
@@ -115,7 +115,11 @@ model = dict(
             subfolder='scheduler',              
             prediction_type='sample'),
         unet = dict(
-            type='projects.bevdiffuser.ldm.modules.diffusionmodules.openaimodel.UNetModel',
+            # type='projects.bevdiffuser.ldm.modules.diffusionmodules.openaimodel.UNetModel',
+            type='projects.bevdiffuser.layout_diffusion.diffusion_unet.UNetModel',
+            # pretrained='ckpts/checkpoint-50000',
+            # pretrained='BEVFormer/ckpts/checkpoint-50000',
+            pretrained='None',
             parameters=dict(
                 image_size=bev_h_,
                 use_fp16=False,
@@ -123,7 +127,7 @@ model = dict(
                 in_channels=_dim_,
                 out_channels=_dim_,
                 model_channels=256,
-                context_dim=256,
+                context_dim=768,
                 # encoder_channels=256, # assert same as layout_encoder.hidden_dim
                 num_head_channels=32,
                 num_heads=-1,
@@ -241,17 +245,17 @@ model = dict(
             pc_range=point_cloud_range))),
     test_cfg = dict(
         pts=dict(diffusion=dict(
-            noise_timesteps=5,          
-            denoise_timesteps=5,      
-            num_inference_steps=5,
+            noise_timesteps=0,          
+            denoise_timesteps=1,      
+            num_inference_steps=1,
             ddim_sampling_eta=0.0,                   
             guidance_scale=2.0,
             use_task_guidance=False))))    
     
 
 dataset_type = 'CustomNuScenesDiffusionDataset_layout'
-data_root = 'data/nuscenes/'
-# data_root = 'BEVFormer/data/nuscenes/'
+# data_root = 'data/nuscenes/'
+data_root = 'BEVFormer/data/nuscenes/'
 file_client_args = dict(backend='disk')
 
 train_pipeline = [
@@ -320,46 +324,64 @@ data = dict(
 
 optimizer = dict(
     type='AdamW',
-    lr=2e-5, 
+    lr=2e-4, 
     paramwise_cfg=dict(
         custom_keys={
             'img_backbone': dict(lr_mult=0.1),
-            'pts_bbox_head.unet': dict(lr_mult=0.0)
+            # 'pts_bbox_head.unet': dict(lr_mult=0.0)
         }),
     weight_decay=0.01)
 
 optimizer_config = dict(grad_clip=dict(max_norm=35, norm_type=2))
 
+
 # learning policy
 lr_config = dict(
     policy='CosineAnnealing',
-    by_epoch=False,          # iter 단위 LR 갱신
     warmup='linear',
-    warmup_by_epoch=False,   # iter 단위 warmup
-    warmup_iters=500,        # 500 / 98462 비율과 동일
-    warmup_ratio=1.0/3,
+    warmup_iters=500,
+    warmup_ratio=1.0 / 3,
     min_lr_ratio=1e-3)
+total_epochs = 12
+evaluation = dict(interval=4, pipeline=test_pipeline)
 
-# total_epochs = 1
+runner = dict(type='EpochBasedRunner', max_epochs=total_epochs)
 
-# evaluation = dict(interval=total_epochs, pipeline=test_pipeline)
-# runner = dict(type='EpochBasedRunner', max_epochs=total_epochs)
-# checkpoint_config = dict(interval=1)
+log_config = dict(
+    interval=50,
+    hooks=[
+        dict(type='TextLoggerHook'),
+        dict(type='TensorboardLoggerHook')
+    ])
 
-runner = dict(type='IterBasedRunner', max_iters=150000)  # DiffBEV : 200,000
+checkpoint_config = dict(interval=4)
 
-evaluation = dict(
-    interval=50000,
-    by_epoch=False,
-    pipeline=test_pipeline
-)
 
-checkpoint_config = dict(
-    by_epoch=False,
-    interval=50000,
-    max_keep_ckpts=3,
-    save_last=True
-)
+# learning policy
+# lr_config = dict(
+#     policy='CosineAnnealing',
+#     by_epoch=False,          # iter 단위 LR 갱신
+#     warmup='linear',
+#     warmup_by_epoch=False,   # iter 단위 warmup
+#     warmup_iters=500,        # 500 / 98462 비율과 동일
+#     warmup_ratio=1.0/3,
+#     min_lr_ratio=1e-3)
+
+# runner = dict(type='IterBasedRunner', max_iters=50)  # DiffBEV : 200,000
+
+# evaluation = dict(
+#     interval=50,
+#     by_epoch=False,
+#     pipeline=test_pipeline
+# )
+
+# checkpoint_config = dict(
+#     by_epoch=False,
+#     interval=50,
+#     max_keep_ckpts=3,
+#     save_last=True
+# )
+
 
 log_config = dict(
     interval=50,
@@ -370,63 +392,3 @@ log_config = dict(
     ])
 
 
-
-"""
-step 기준 학습
-
-optimizer = dict(
-    type='AdamW',
-    lr=2e-4,
-    betas=(0.9, 0.999),
-    weight_decay=0.01
-)
-
-optimizer_config = dict(
-    grad_clip=dict(max_norm=35, norm_type=2)
-)
-
-lr_config = dict(
-    policy='CosineAnnealing',
-    by_epoch=False,
-    warmup='linear',
-    warmup_iters=1500,
-    warmup_ratio=1.0 / 3,
-    min_lr_ratio=1e-3
-)
-
-runner = dict(type='IterBasedRunner', max_iters=50000)  # DiffBEV : 200,000
-workflow = [('train', 1)]
-
-evaluation = dict(
-    interval=10000,
-    by_epoch=False,
-    pipeline=test_pipeline
-)
-
-log_config = dict(
-    interval=50,
-    hooks=[
-        dict(type='TextLoggerHook'),
-        dict(type='TensorboardLoggerHook')
-    ]
-)
-
-checkpoint_config = dict(
-    by_epoch=False,
-    interval=10000,
-    max_keep_ckpts=3,
-    save_last=True
-)
-
-
-# (선택)
-optimizer_config = dict(grad_clip=dict(max_norm=35, norm_type=2), cumulative_iters=1)
-
-optimizer_config = dict(
-    type='GradientCumulativeOptimizerHook',
-    cumulative_iters=2,                     # 2 step 누적 = 1번 업데이트
-    grad_clip=dict(max_norm=35, norm_type=2)
-)
-
-
-"""

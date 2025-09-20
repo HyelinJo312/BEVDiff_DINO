@@ -199,6 +199,7 @@ def custom_train_detector(model,
             shuffler_sampler=cfg.data.shuffler_sampler,  # dict(type='DistributedGroupSampler'),
             nonshuffler_sampler=cfg.data.nonshuffler_sampler,  # dict(type='DistributedSampler'),
         )
+        
         eval_cfg = cfg.get('evaluation', {})
         # eval_cfg['start'] = 0
         eval_cfg['by_epoch'] = cfg.runner['type'] != 'IterBasedRunner'

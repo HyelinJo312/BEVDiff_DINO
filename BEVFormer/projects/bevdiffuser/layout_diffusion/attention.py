@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from torch import nn, einsum
 from einops import rearrange, repeat
 
-from projects.bevdiffuser.ldm.modules.diffusionmodules.util import checkpoint
+# from projects.bevdiffuser.ldm.modules.diffusionmodules.util import checkpoint
 
 
 def exists(val):
@@ -194,7 +194,7 @@ class CrossAttention(nn.Module):
 
 
 class BasicTransformerBlock(nn.Module):
-    def __init__(self, dim, n_heads, d_head, dropout=0., context_dim=None, gated_ff=True, checkpoint=False):
+    def __init__(self, dim, n_heads, d_head, dropout=0., context_dim=None, gated_ff=True):
         super().__init__()
         self.attn1 = CrossAttention(query_dim=dim, heads=n_heads, dim_head=d_head, dropout=dropout)  # is a self-attention
         self.ff = FeedForward(dim, dropout=dropout, glu=gated_ff)
@@ -203,20 +203,14 @@ class BasicTransformerBlock(nn.Module):
         self.norm1 = nn.LayerNorm(dim)
         self.norm2 = nn.LayerNorm(dim)
         self.norm3 = nn.LayerNorm(dim)
-        self.checkpoint = checkpoint
 
     def forward(self, x, context=None):
-        # return checkpoint(self._forward, (x, context), self.parameters(), self.checkpoint) ## suraj: error happening in kitti at this line
-        return checkpoint(self._forward, (x, context), params=[], flag=self.checkpoint) 
-
-
-    def _forward(self, x, context=None):
         x = self.attn1(self.norm1(x)) + x
         x = self.attn2(self.norm2(x), context=context) + x
         x = self.ff(self.norm3(x)) + x
         return x
-
-
+    
+    
 class SpatialTransformer(nn.Module):
     """
     Transformer block for image-like data.
